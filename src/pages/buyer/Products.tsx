@@ -1,35 +1,22 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Search, SlidersHorizontal } from 'lucide-react'
 import { productApi } from '@/api/product.api'
 import { ProductGrid } from '@/components/ProductGrid'
 import { Pagination } from '@/components/Pagination'
 import {
-  ProductFilters,
+  ProductFilterBar,
+  defaultProductFilters,
   type ProductFilterValues,
+  type ProductSort,
 } from '@/components/ProductFilters'
 import { LoadingState } from '@/components/LoadingState'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorMessage } from '@/components/ErrorMessage'
-import { Button } from '@/components/ui/button'
-import { LoadingButton } from '@/components/ui/loading-button'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
-import { Input } from '@/components/ui/input'
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from '@/components/ui/sheet'
 import { createEffectGuard } from '@/lib/effect-guard'
 import type { PaginatedProducts } from '@/types/product'
 
 const PAGE_SIZE = 20
+const SEARCH_DEBOUNCE_MS = 400
 
 export default function Products() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -43,9 +30,7 @@ export default function Products() {
 
   const filters: ProductFilterValues = useMemo(
     () => ({
-      minPrice: searchParams.get('min_price') ?? '',
-      maxPrice: searchParams.get('max_price') ?? '',
-      sort: (searchParams.get('sort') as ProductFilterValues['sort']) ?? 'newest',
+      sort: (searchParams.get('sort') as ProductSort) ?? defaultProductFilters.sort,
     }),
     [searchParams],
   )
@@ -68,15 +53,11 @@ export default function Products() {
     (isActive: () => boolean = () => true) => {
       setLoading(true)
       setError(null)
-      const min = filters.minPrice ? Number(filters.minPrice) : undefined
-      const max = filters.maxPrice ? Number(filters.maxPrice) : undefined
       productApi
         .getProducts({
           page,
           limit: PAGE_SIZE,
           search: search || undefined,
-          min_price: min,
-          max_price: max,
           sort: filters.sort,
         })
         .then((result) => {
@@ -99,27 +80,59 @@ export default function Products() {
   }, [loadProducts])
 
   useEffect(() => {
+    setSearchInput(searchParams.get('search') ?? '')
+  }, [search])
+
+  useEffect(() => {
     const stale: Record<string, null> = {}
     if (searchParams.has('product_type')) stale.product_type = null
     if (searchParams.has('in_stock')) stale.in_stock = null
+    if (searchParams.has('min_price')) stale.min_price = null
+    if (searchParams.has('max_price')) stale.max_price = null
     if (Object.keys(stale).length > 0) updateParams(stale)
   }, [searchParams, updateParams])
 
-  const applyFilters = useCallback(
-    (values: ProductFilterValues) => {
+  useEffect(() => {
+    const next = searchInput.trim()
+    const applied = search.trim()
+    if (next === applied) return
+
+    const timer = window.setTimeout(() => {
+      updateParams({ page: '1', search: next || null })
+    }, SEARCH_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(timer)
+  }, [searchInput, search, updateParams])
+
+  const applySort = useCallback(
+    (sort: ProductSort) => {
       updateParams({
         page: '1',
-        min_price: values.minPrice || null,
-        max_price: values.maxPrice || null,
-        sort: values.sort === 'newest' ? null : values.sort,
+        sort: sort === defaultProductFilters.sort ? null : sort,
       })
     },
     [updateParams],
   )
 
-  const submitSearch = (e: FormEvent) => {
-    e.preventDefault()
-    updateParams({ page: '1', search: searchInput.trim() || null })
+  const applySearchNow = useCallback(() => {
+    const next = searchInput.trim()
+    updateParams({ page: '1', search: next || null })
+  }, [searchInput, updateParams])
+
+  const hasActiveFilters =
+    Boolean(searchInput.trim()) ||
+    Boolean(search) ||
+    filters.sort !== defaultProductFilters.sort
+
+  const clearFilters = () => {
+    setSearchInput('')
+    updateParams({
+      page: '1',
+      search: null,
+      sort: null,
+      min_price: null,
+      max_price: null,
+    })
   }
 
   return (
@@ -129,72 +142,35 @@ export default function Products() {
         <p className="text-muted-foreground">Browse paintings and art materials</p>
       </div>
 
-      <form onSubmit={submitSearch} className="flex gap-2">
-        <Input
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Search paintings and art materials..."
-          aria-label="Search products"
-          className="max-w-xl"
-        />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <LoadingButton type="submit" size="icon" loading={loading} aria-label="Search products">
-              <Search className="h-4 w-4" />
-            </LoadingButton>
-          </TooltipTrigger>
-          <TooltipContent>Search</TooltipContent>
-        </Tooltip>
-      </form>
+      <ProductFilterBar
+        searchValue={searchInput}
+        onSearchChange={setSearchInput}
+        onSearchSubmit={applySearchNow}
+        sort={filters.sort}
+        onSortChange={applySort}
+        onClear={clearFilters}
+        canClear={hasActiveFilters}
+      />
 
-      <div className="flex gap-8">
-        <aside className="hidden w-64 shrink-0 lg:block">
-          <ProductFilters values={filters} onChange={applyFilters} />
-        </aside>
-
-        <div className="min-w-0 flex-1 space-y-6">
-          <div className="flex justify-end lg:hidden">
-            <Sheet>
-              <SheetTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <SlidersHorizontal className="h-4 w-4" />
-                  Filters
-                </Button>
-              </SheetTrigger>
-              <SheetContent side="left" className="overflow-y-auto">
-                <SheetHeader>
-                  <SheetTitle>Filters</SheetTitle>
-                </SheetHeader>
-                <div className="mt-6">
-                  <ProductFilters
-                    idPrefix="mobile"
-                    values={filters}
-                    onChange={applyFilters}
-                  />
-                </div>
-              </SheetContent>
-            </Sheet>
-          </div>
-
-          {loading ? <LoadingState message="Loading products..." /> : null}
-          {error ? (
-            <ErrorMessage message={error} onRetry={() => loadProducts()} retryLoading={loading} />
-          ) : null}
-          {!loading && !error && (data?.items?.length ?? 0) === 0 ? (
-            <EmptyState title="No products found." />
-          ) : null}
-          {!loading && !error && data && (data.items?.length ?? 0) > 0 ? (
-            <>
-              <ProductGrid products={data.items} />
-              <Pagination
-                page={data.page}
-                totalPages={data.total_pages}
-                disabled={loading}
-                onPageChange={(p) => updateParams({ page: String(p) })}
-              />
-            </>
-          ) : null}
-        </div>
+      <div className="space-y-6">
+        {loading ? <LoadingState message="Loading products..." /> : null}
+        {error ? (
+          <ErrorMessage message={error} onRetry={() => loadProducts()} retryLoading={loading} />
+        ) : null}
+        {!loading && !error && (data?.items?.length ?? 0) === 0 ? (
+          <EmptyState title="No products found." />
+        ) : null}
+        {!loading && !error && data && (data.items?.length ?? 0) > 0 ? (
+          <>
+            <ProductGrid products={data.items} />
+            <Pagination
+              page={data.page}
+              totalPages={data.total_pages}
+              disabled={loading}
+              onPageChange={(p) => updateParams({ page: String(p) })}
+            />
+          </>
+        ) : null}
       </div>
     </div>
   )
